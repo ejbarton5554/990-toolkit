@@ -1,0 +1,11 @@
+# Data (large, sensitive, or IRS-provided)
+UnzipSchemas/
+990_xmls/
+concordance_output/
+audit_output/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+```
