@@ -1074,6 +1074,15 @@ class OutputWriter:
             for v, xp in cf.xpaths_by_version.items():
                 xpath_index[xp] = cf.canonical_name
 
+        # Add legacy xpath aliases for old-style IRS element names.
+        # Real filings sometimes use element names that predate all available
+        # XSD schemas (e.g., City instead of CityNm, AddressLine1 instead of
+        # AddressLine1Txt).  Generate reverse aliases so these old-name xpaths
+        # resolve to the same canonical field as their modern counterparts.
+        alias_count = _add_legacy_xpath_aliases(xpath_index)
+        if alias_count:
+            print(f"  → Added {alias_count} legacy xpath aliases")
+
         output = {
             "metadata": {
                 "versions": self.versions,
@@ -1096,6 +1105,47 @@ class OutputWriter:
 # ---------------------------------------------------------------------------
 # Utilities
 # ---------------------------------------------------------------------------
+
+# Legacy IRS element name mappings.  The IRS renamed many elements by adding
+# suffixes (Txt, Nm, Cd, etc.) sometime before the 2018v3.0 schema.  Real
+# filings still use the old names.  Each entry maps (old_leaf → new_leaf).
+_LEGACY_ELEMENT_RENAMES = {
+    # Address fields
+    "AddressLine1":     "AddressLine1Txt",
+    "AddressLine2":     "AddressLine2Txt",
+    "City":             "CityNm",
+    "State":            "StateAbbreviationCd",
+    "ZIPCode":          "ZIPCd",
+    # Business name fields
+    "BusinessNameLine1": "BusinessNameLine1Txt",
+    "BusinessNameLine2": "BusinessNameLine2Txt",
+}
+
+# Build reverse map: new_leaf → old_leaf
+_REVERSE_RENAMES = {v: k for k, v in _LEGACY_ELEMENT_RENAMES.items()}
+
+
+def _add_legacy_xpath_aliases(xpath_index: dict) -> int:
+    """For every xpath in the index whose leaf element has a known legacy
+    name variant, add the legacy xpath as an alias pointing to the same
+    canonical field.  Returns the number of aliases added.
+
+    Example: if the index contains
+        /IRS990ScheduleB/.../ContributorUSAddress/CityNm → some_field
+    this adds
+        /IRS990ScheduleB/.../ContributorUSAddress/City   → some_field
+    """
+    aliases = {}
+    for xpath, canonical_name in xpath_index.items():
+        leaf = xpath.rsplit("/", 1)[-1] if "/" in xpath else xpath
+        if leaf in _REVERSE_RENAMES:
+            old_leaf = _REVERSE_RENAMES[leaf]
+            old_xpath = xpath[:xpath.rfind("/") + 1] + old_leaf
+            if old_xpath not in xpath_index and old_xpath not in aliases:
+                aliases[old_xpath] = canonical_name
+    xpath_index.update(aliases)
+    return len(aliases)
+
 
 def _version_sort_key(version: str) -> tuple:
     """Sort version strings like '2013v3.0' chronologically."""
