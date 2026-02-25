@@ -304,6 +304,11 @@ class ConcordanceAuditor:
         self._seen_conc_fields: set[str] = set()  # canonical names seen
         self._filing_versions: set[str] = set()
 
+        # Field frequency tracking (enabled with --frequency)
+        self._track_frequency = False
+        self._field_present: dict[str, int] = defaultdict(int)    # canonical -> count of filings present
+        self._field_nontrivial: dict[str, int] = defaultdict(int) # canonical -> count with nontrivial value
+
     def audit_filing(self, filing: FilingInfo):
         """Audit one filing against the concordance."""
         self.results.filings_audited += 1
@@ -314,6 +319,9 @@ class ConcordanceAuditor:
             self._filing_versions.add(version)
 
         xpath_values = getattr(filing, '_xpath_values', {})
+
+        # Per-filing set for frequency tracking (deduplicate within one filing)
+        _filing_fields_seen: set[str] = set()
 
         # Track which xpaths from this filing are in/not in concordance
         for xpath in filing.all_xpaths:
@@ -339,6 +347,15 @@ class ConcordanceAuditor:
             if xpath in self.xpath_index:
                 canonical = self.xpath_index[xpath]
                 self._seen_conc_fields.add(canonical)
+
+                # Frequency tracking: record per-filing presence
+                if self._track_frequency and canonical not in _filing_fields_seen:
+                    _filing_fields_seen.add(canonical)
+                    self._field_present[canonical] += 1
+                    # Check for nontrivial value
+                    val = xpath_values.get(xpath, "")
+                    if val and val.strip().upper() not in ("", "0", "0.00", "NONE", "N/A"):
+                        self._field_nontrivial[canonical] += 1
 
     def finalize(self) -> AuditResults:
         """Compute final audit results after all filings processed."""
@@ -1035,6 +1052,37 @@ def write_audit_markdown(results: AuditResults, output_dir: str):
             f.write("\n")
 
 
+def write_field_frequency(auditor: 'ConcordanceAuditor', output_dir: str):
+    """Write field frequency statistics to JSON."""
+    path = os.path.join(output_dir, "field_frequency.json")
+    total_filings = auditor.results.filings_audited
+
+    fields_freq = {}
+    for canonical in auditor.fields:
+        present = auditor._field_present.get(canonical, 0)
+        nontrivial = auditor._field_nontrivial.get(canonical, 0)
+        fields_freq[canonical] = {
+            "present_count": present,
+            "present_pct": round(present / total_filings * 100, 1) if total_filings > 0 else 0.0,
+            "nontrivial_count": nontrivial,
+            "nontrivial_pct": round(nontrivial / total_filings * 100, 1) if total_filings > 0 else 0.0,
+        }
+
+    output = {
+        "metadata": {
+            "filings_audited": total_filings,
+            "timestamp": datetime.now().isoformat(),
+            "concordance_fields": len(auditor.fields),
+        },
+        "fields": fields_freq,
+    }
+
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(output, f, indent=2, ensure_ascii=False)
+
+    return path
+
+
 def write_patch_file(results: AuditResults, output_dir: str):
     """Write a patch file that can be used to extend the concordance with
     unknown xpaths. Only includes unknowns seen in 2+ filings."""
@@ -1111,6 +1159,8 @@ Examples:
                         help="Directory for audit output files")
     parser.add_argument("--patch", action="store_true",
                         help="Generate a patch file for unknown xpaths")
+    parser.add_argument("--frequency", action="store_true",
+                        help="Track field population frequency and output field_frequency.json")
     parser.add_argument("--verbose", action="store_true",
                         help="Show per-filing progress")
     parser.add_argument("--max-filings", type=int, default=0,
@@ -1127,6 +1177,8 @@ Examples:
         sys.exit(f"ERROR: Concordance file not found: {args.concordance}")
 
     auditor = ConcordanceAuditor(args.concordance)
+    if args.frequency:
+        auditor._track_frequency = True
     print(f"\nConcordance: {auditor.results.concordance_fields} fields, "
           f"{len(auditor.conc_versions)} versions")
 
@@ -1204,6 +1256,10 @@ Examples:
     if args.patch:
         patch_count = write_patch_file(results, args.output_dir)
 
+    freq_path = None
+    if args.frequency:
+        freq_path = write_field_frequency(auditor, args.output_dir)
+
     print(f"\nOutput written to: {args.output_dir}/")
     print(f"  audit_report.json      — Machine-readable audit results")
     print(f"  audit_report.md        — Human-readable summary")
@@ -1211,6 +1267,8 @@ Examples:
     if args.patch:
         print(f"  concordance_patch.json — {patch_count} proposed additions "
               f"(seen in 2+ filings)")
+    if freq_path:
+        print(f"  field_frequency.json   — Population frequency for all {len(auditor.fields)} concordance fields")
 
     print(f"\n{'='*60}")
     print(f"Done!")
