@@ -621,6 +621,7 @@ class ConcordanceBuilder:
         # abbreviation renames like BaseCompensationFilingOrgAmt →
         # BsCmpnstnFlngOrgAmt)
         self._merge_by_description()
+        self._resolve_name_collisions()
 
         # Sort by schedule then xpath for clean output
         self.canonical_fields.sort(key=lambda f: (f.schedule, f.canonical_name))
@@ -786,6 +787,23 @@ class ConcordanceBuilder:
                 if id(cf) not in merged_away
             ]
             print(f"  → Merged {merge_count} renamed fields by matching descriptions")
+
+    def _resolve_name_collisions(self):
+        """Disambiguate canonical names that collide across different schedules."""
+        from collections import Counter
+        name_counts = Counter(cf.canonical_name for cf in self.canonical_fields)
+        collisions = {name for name, count in name_counts.items() if count > 1}
+
+        if not collisions:
+            return
+
+        renamed = 0
+        for cf in self.canonical_fields:
+            if cf.canonical_name in collisions:
+                cf.canonical_name = f"{cf.schedule}_{cf.canonical_name}"
+                renamed += 1
+
+        print(f"  → Resolved {len(collisions)} canonical name collisions ({renamed} fields renamed)")
 
     @staticmethod
     def _xpath_to_canonical_name(xpath: str) -> str:
