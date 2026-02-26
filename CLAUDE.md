@@ -6,11 +6,10 @@ This project builds tools for investigating nonprofit fraud using IRS 990 XML fi
 ## Architecture
 
 ### 1. Concordance Builder (`concordance_builder.py`)
-Parses IRS XSD schema files to build a cross-version field concordance. Maps every xpath across all schema versions to canonical field names with labels, types, and descriptions.
-
-**Input:** `./UnzipSchemas/` — 33 or more (variable number) IRS schema versions, each with nested structure:
+Parses IRS XSD schema files to build a cross-version field concordance. Maps every xpath across all schema versions to canonical field names with labels
+**Input:** `./TEGESchemas/` — 33 or more (variable number) IRS schema versions, each with nested structure:
 ```
-UnzipSchemas/2020v4.2/
+TEGESchemas/2020v4.2/
 ├── Common/efileTypes.xsd          (type definitions)
 └── TEGE/
     ├── Common/IRS990ScheduleA/    (each schedule in its own folder)
@@ -30,14 +29,14 @@ UnzipSchemas/2020v4.2/
 - Named complex types defined in separate files (efileTypes.xsd, form-specific types)
 - Dependency schedules and related tax forms (IRS990T, IRS4562, TransfersToControlledEntities, etc.) that appear in 990 filings but aren't named IRS990*
 
-**Run:** `python concordance_builder.py --schema-dir ./UnzipSchemas --output-dir ./concordance_output --verbose`
+**Run:** `python concordance_builder.py --schema-dir ./TEGESchemas --output-dir ./concordance_output --verbose`
 
 ### 2. Concordance Validator (`concordance_validator.py`)
 Brute-force extracts every `xs:element[@name]` from schema files and checks which are missing from the concordance. Groups missing elements by XSD pattern to diagnose builder gaps. Distinguishes leaf fields from group containers.
 
 Should be checked with different versions, here's an example:
 
-**Run:** `python concordance_validator.py --schema-dir ./UnzipSchemas --concordance ./concordance_output/field_lookup.json --version 2020v4.2`
+**Run:** `python concordance_validator.py --schema-dir ./TEGESchemas --concordance ./concordance_output/field_lookup.json --version 2020v4.2`
 
 ### 3. Concordance Auditor (`concordance_auditor.py`)
 Validates concordance against real XML filings. For each unknown xpath:
@@ -64,7 +63,7 @@ The extracted data feeds into fraud detection patterns including:
 - Comparison with SEC 10-K forensic analysis patterns (FASB XBRL taxonomy parallels)
 
 ## Data Directories
-- `./UnzipSchemas/` — 33 IRS schema versions (2018v3.0 through 2024v5.0)
+- `./TEGESchemas/` — IRS schema versions (2018v3.0 through 2024v5.0)
 - `./990_xmls/` — real 990 XML filings for testing/auditing
 - `./concordance_output/` — builder output
 - `./audit_output/` — auditor output (audit_report.md, unknown_xpaths.csv, etc.)
