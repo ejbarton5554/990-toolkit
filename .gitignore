@@ -3,6 +3,7 @@ UnzipSchemas/
 990_xmls/
 concordance_output/
 audit_output/
+extracted_output/
 
 # Python
 __pycache__/
