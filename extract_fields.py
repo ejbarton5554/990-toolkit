@@ -719,8 +719,8 @@ Examples:
                         help="Directory of IRS 990 XML filings (default: ./990_xmls)")
     parser.add_argument("--concordance", default="./concordance_output/field_lookup.json",
                         help="Path to field_lookup.json (default: ./concordance_output/field_lookup.json)")
-    parser.add_argument("--output-dir", default="./extracted_output",
-                        help="Output directory for CSVs (default: ./extracted_output)")
+    parser.add_argument("--output-dir", default=None,
+                        help="Output directory for CSVs (default: ./extracted_output/<schedule> or ./extracted_output)")
     parser.add_argument("--limit", type=int, default=0,
                         help="Max filings to process (0 = all, default: 0)")
     parser.add_argument("--verbose", action="store_true",
@@ -740,6 +740,13 @@ Examples:
     if args.schedule and args.fields_dir is not None:
         print("ERROR: --schedule and --fields-dir are mutually exclusive.")
         sys.exit(1)
+
+    # Default output directory: schedule-specific subdirectory when --schedule is used
+    if args.output_dir is None:
+        if args.schedule:
+            args.output_dir = os.path.join("./extracted_output", args.schedule)
+        else:
+            args.output_dir = "./extracted_output"
 
     # Validate concordance
     if not os.path.isfile(args.concordance):
