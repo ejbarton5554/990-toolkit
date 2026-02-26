@@ -1,15 +1,15 @@
 #!/usr/bin/env python
 """
-Extract specific fields from IRS 990 XML filings based on Field Finder exports.
+Extract specific fields from IRS 990 XML filings.
 
-Reads JSON field specifications exported by the dashboard's Field Finder,
-extracts those fields from all XML filings, and produces CSVs split by
-repeating group with a cross-reference file.
+Two modes:
+  1. Field Finder mode (default): reads JSON exports from --fields-dir
+  2. Schedule mode: extracts all leaf fields for a schedule from the concordance
 
 Usage:
-    python extract_fields.py --fields-dir ./Fields --xml-dir ./990_xmls \
-        --concordance ./concordance_output/field_lookup.json \
-        --output-dir ./extracted_output --limit 100 --verbose
+    python extract_fields.py --fields-dir ./Fields --limit 100 --verbose
+    python extract_fields.py --schedule IRS990ScheduleJ --limit 100 --verbose
+    python extract_fields.py --list-schedules
 """
 
 import argparse
@@ -200,6 +200,148 @@ def load_field_specs(fields_dir, concordance_path):
         print("    %s: %d child fields" % (gname, len(gspec.child_fields)))
 
     return scalar_specs, group_specs
+
+
+# ---------------------------------------------------------------------------
+# Load fields from concordance by schedule name
+# ---------------------------------------------------------------------------
+
+def load_schedule_fields(concordance_path, schedule_name):
+    # type: (str, str) -> Tuple[List[FieldSpec], Dict[str, GroupSpec]]
+    """Load all leaf fields for a schedule directly from the concordance.
+
+    Returns (scalar_specs, group_specs) — same shape as load_field_specs().
+    """
+    with open(concordance_path, "r") as f:
+        concordance = json.load(f)
+
+    fields = concordance.get("fields", {})
+
+    # Optionally load enrichment files from same directory
+    conc_dir = os.path.dirname(concordance_path)
+    freq_data = {}
+    cat_data = {}
+
+    freq_path = os.path.join(conc_dir, "field_frequency.json")
+    if os.path.isfile(freq_path):
+        with open(freq_path, "r") as f:
+            freq_raw = json.load(f)
+        freq_data = freq_raw.get("fields", {})
+
+    cat_path = os.path.join(conc_dir, "category_mapping.json")
+    if os.path.isfile(cat_path):
+        with open(cat_path, "r") as f:
+            cat_raw = json.load(f)
+        cat_data = cat_raw.get("field_to_categories", {})
+
+    # Filter fields for this schedule, skip groups
+    matched = OrderedDict()  # type: Dict[str, dict]
+    for fname, fmeta in fields.items():
+        if fmeta.get("schedule") != schedule_name:
+            continue
+        if fmeta.get("type") == "(group)":
+            continue
+        matched[fname] = fmeta
+
+    if not matched:
+        print("ERROR: No leaf fields found for schedule '%s'" % schedule_name)
+        print("Use --list-schedules to see available schedule names.")
+        sys.exit(1)
+
+    # Convert to FieldSpec objects
+    all_fields = OrderedDict()  # type: Dict[str, FieldSpec]
+    for fname, fmeta in matched.items():
+        spec = FieldSpec()
+        spec.field_name = fname
+        spec.label = fmeta.get("label", "")
+        spec.schedule = fmeta.get("schedule", "")
+        spec.field_type = fmeta.get("type", "")
+        spec.description = fmeta.get("description", "")
+        spec.xpaths = fmeta.get("xpaths", {})
+        spec.source_jsons = ["concordance:%s" % schedule_name]
+
+        # Enrich with frequency
+        if fname in freq_data:
+            spec.frequency_pct = freq_data[fname].get("present_pct")
+
+        # Enrich with categories
+        if fname in cat_data:
+            # cat_data[fname] is list of category paths like [["Expenses", "Compensation", ...]]
+            # Flatten to top-level category names
+            cats = []
+            for path in cat_data[fname]:
+                if path and path[0] not in cats:
+                    cats.append(path[0])
+            spec.categories = cats
+
+        # Detect group membership from xpath
+        sample_xpath = ""
+        for v in sorted(spec.xpaths.keys()):
+            sample_xpath = spec.xpaths[v]
+            break
+
+        group_name, group_prefix, rel_xpath = detect_group(sample_xpath)
+        spec.is_repeating = bool(group_name)
+        spec.group_name = group_name
+        spec.group_xpath_prefix = group_prefix
+        spec.relative_xpath = rel_xpath
+
+        all_fields[fname] = spec
+
+    print("Loaded %d leaf fields for schedule '%s' from concordance" % (
+        len(all_fields), schedule_name))
+
+    # Split into scalar vs group
+    scalar_specs = []  # type: List[FieldSpec]
+    group_specs = OrderedDict()  # type: Dict[str, GroupSpec]
+
+    for spec in all_fields.values():
+        if spec.is_repeating:
+            gname = spec.group_name
+            if gname not in group_specs:
+                group_specs[gname] = GroupSpec(gname, spec.group_xpath_prefix, spec.schedule)
+            group_specs[gname].child_fields.append(spec)
+        else:
+            scalar_specs.append(spec)
+
+    print("  Scalar fields: %d" % len(scalar_specs))
+    print("  Group fields: %d across %d groups" % (
+        sum(len(g.child_fields) for g in group_specs.values()),
+        len(group_specs)
+    ))
+    for gname, gspec in group_specs.items():
+        print("    %s: %d child fields" % (gname, len(gspec.child_fields)))
+
+    return scalar_specs, group_specs
+
+
+def list_schedules(concordance_path):
+    # type: (str) -> None
+    """Print all schedule names with field counts from the concordance."""
+    with open(concordance_path, "r") as f:
+        concordance = json.load(f)
+
+    fields = concordance.get("fields", {})
+
+    # Count leaf fields per schedule
+    schedule_counts = {}  # type: Dict[str, int]
+    schedule_groups = {}  # type: Dict[str, int]
+    for fname, fmeta in fields.items():
+        sched = fmeta.get("schedule", "")
+        if not sched:
+            continue
+        if fmeta.get("type") == "(group)":
+            schedule_groups[sched] = schedule_groups.get(sched, 0) + 1
+        else:
+            schedule_counts[sched] = schedule_counts.get(sched, 0) + 1
+
+    print("Schedules in concordance (%d total):\n" % len(schedule_counts))
+    print("  %-45s  %s  %s" % ("Schedule", "Leaf fields", "Groups"))
+    print("  %-45s  %s  %s" % ("-" * 45, "-" * 11, "-" * 6))
+    for sched in sorted(schedule_counts.keys()):
+        leaf = schedule_counts[sched]
+        grp = schedule_groups.get(sched, 0)
+        print("  %-45s  %5d        %3d" % (sched, leaf, grp))
 
 
 # ---------------------------------------------------------------------------
@@ -556,17 +698,23 @@ def write_outputs(output_dir, scalar_rows, group_rows, scalar_specs, group_specs
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Extract fields from IRS 990 XML filings based on Field Finder exports.",
+        description="Extract fields from IRS 990 XML filings based on Field Finder exports or concordance schedules.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
   %(prog)s --limit 100 --verbose
   %(prog)s --fields-dir ./Fields --xml-dir ./990_xmls --output-dir ./extracted_output
+  %(prog)s --schedule IRS990ScheduleJ --limit 100 --verbose
+  %(prog)s --list-schedules
   %(prog)s --concordance ./concordance_output/field_lookup.json --limit 500
         """
     )
-    parser.add_argument("--fields-dir", default="./Fields",
+    parser.add_argument("--fields-dir", default=None,
                         help="Directory of Field Finder JSON exports (default: ./Fields)")
+    parser.add_argument("--schedule", default=None,
+                        help="Extract all leaf fields from this concordance schedule (e.g. IRS990ScheduleJ)")
+    parser.add_argument("--list-schedules", action="store_true",
+                        help="List available schedule names from the concordance and exit")
     parser.add_argument("--xml-dir", default="./990_xmls",
                         help="Directory of IRS 990 XML filings (default: ./990_xmls)")
     parser.add_argument("--concordance", default="./concordance_output/field_lookup.json",
@@ -580,20 +728,38 @@ Examples:
 
     args = parser.parse_args()
 
-    # Validate paths
-    if not os.path.isdir(args.fields_dir):
-        print("ERROR: Fields directory not found: %s" % args.fields_dir)
+    # --list-schedules: print and exit
+    if args.list_schedules:
+        if not os.path.isfile(args.concordance):
+            print("ERROR: Concordance file not found: %s" % args.concordance)
+            sys.exit(1)
+        list_schedules(args.concordance)
+        sys.exit(0)
+
+    # Validate mutual exclusivity
+    if args.schedule and args.fields_dir is not None:
+        print("ERROR: --schedule and --fields-dir are mutually exclusive.")
         sys.exit(1)
-    if not os.path.isdir(args.xml_dir):
-        print("ERROR: XML directory not found: %s" % args.xml_dir)
-        sys.exit(1)
+
+    # Validate concordance
     if not os.path.isfile(args.concordance):
         print("ERROR: Concordance file not found: %s" % args.concordance)
         sys.exit(1)
 
-    # Load field specs
+    # Load field specs — schedule mode or fields-dir mode
     print("Loading field specifications...")
-    scalar_specs, group_specs = load_field_specs(args.fields_dir, args.concordance)
+    if args.schedule:
+        scalar_specs, group_specs = load_schedule_fields(args.concordance, args.schedule)
+    else:
+        fields_dir = args.fields_dir if args.fields_dir is not None else "./Fields"
+        if not os.path.isdir(fields_dir):
+            print("ERROR: Fields directory not found: %s" % fields_dir)
+            sys.exit(1)
+        scalar_specs, group_specs = load_field_specs(fields_dir, args.concordance)
+
+    if not os.path.isdir(args.xml_dir):
+        print("ERROR: XML directory not found: %s" % args.xml_dir)
+        sys.exit(1)
 
     # Find XML files
     print("\nScanning for XML filings in %s..." % args.xml_dir)
