@@ -224,7 +224,7 @@ def main():
                         help="Path to field_lookup.json")
     parser.add_argument("--frequency",
                         help="Path to field_frequency.json (optional)")
-    parser.add_argument("--output", default="./concordance_output/category_mapping.json",
+    parser.add_argument("--output", default="./data/concordance/category_mapping.json",
                         help="Output path for category_mapping.json")
     parser.add_argument("--model", default="claude-sonnet-4-6",
                         help="Claude model to use (default: claude-sonnet-4-6)")

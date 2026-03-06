@@ -27,26 +27,6 @@ try:
 except ImportError:
     anthropic = None  # handled at page level
 
-# ---------------------------------------------------------------------------
-# Compatibility shims for older Streamlit versions
-# ---------------------------------------------------------------------------
-
-def _rerun():
-    """Compatible rerun for Streamlit < 1.27."""
-    if hasattr(st, "rerun"):
-        st.rerun()
-    else:
-        st.experimental_rerun()
-
-
-def _get_query_params():
-    """Compatible query params for Streamlit < 1.30."""
-    if hasattr(st, "query_params"):
-        return st.query_params
-    else:
-        params = st.experimental_get_query_params()
-        return {k: v[0] if v else "" for k, v in params.items()}
-
 
 # ---------------------------------------------------------------------------
 # Data Explorer — helpers
@@ -140,11 +120,11 @@ def _compute_groupby_nontrivial(df, col):
 # Configuration
 # ---------------------------------------------------------------------------
 
-CONCORDANCE_DIR = "./concordance_output"
+CONCORDANCE_DIR = "./data/concordance"
 CONCORDANCE_PATH = os.path.join(CONCORDANCE_DIR, "field_lookup.json")
 CATEGORY_PATH = os.path.join(CONCORDANCE_DIR, "category_mapping.json")
 FREQUENCY_PATH = os.path.join(CONCORDANCE_DIR, "field_frequency.json")
-EXTRACTED_DIR = "./extracted_output"
+EXTRACTED_DIR = "./data/extracted"
 
 st.set_page_config(
     page_title="IRS 990 Concordance Explorer",
@@ -760,16 +740,16 @@ def render_finder_results(results, all_fields, frequency, field_to_cats):
         if st.button("Select All High Priority"):
             for item in by_priority.get("high", []):
                 st.session_state["finder_selected"].add(item["field_name"])
-            _rerun()
+            st.rerun()
     with col2:
         if st.button("Select All"):
             for item in fields_list:
                 st.session_state["finder_selected"].add(item["field_name"])
-            _rerun()
+            st.rerun()
     with col3:
         if st.button("Clear Selection"):
             st.session_state["finder_selected"] = set()
-            _rerun()
+            st.rerun()
 
     selected = st.session_state.get("finder_selected", set())
 
@@ -1084,7 +1064,7 @@ def page_field_finder(all_fields, metadata, frequency, field_to_cats):
 
             st.session_state["finder_results"] = results
             st.session_state["finder_selected"] = set()
-            _rerun()
+            st.rerun()
 
     # Show results if we have them
     results = st.session_state.get("finder_results")
@@ -1470,7 +1450,7 @@ def _render_explorer_column_list(df):
                     st.session_state["de_state"] = "numeric"
                 else:
                     st.session_state["de_state"] = "groupby"
-                _rerun()
+                st.rerun()
         with c2:
             st.caption(dtype_str)
         with c3:
@@ -1485,7 +1465,7 @@ def _render_explorer_groupby(df, col):
     """State 2: top-20 values with counts, nontrivial matrix in expander."""
     if st.button("Back to columns"):
         _reset_explorer_to_columns()
-        _rerun()
+        st.rerun()
 
     st.header("Groupby: {}".format(col))
     st.caption("{:,} rows, {:,} unique values".format(len(df), df[col].nunique(dropna=False)))
@@ -1509,7 +1489,7 @@ def _render_explorer_groupby(df, col):
             if st.button(btn_label, key="de_valbtn_{}".format(display_val[:60])):
                 st.session_state["de_selected_value"] = val
                 st.session_state["de_state"] = "drilldown"
-                _rerun()
+                st.rerun()
         with c2:
             st.caption("{:,}".format(cnt))
         with c3:
@@ -1529,7 +1509,7 @@ def _render_explorer_numeric(df, col):
     """Numeric detail: histogram, summary stats, and range-filtered data view."""
     if st.button("Back to columns", key="de_num_back"):
         _reset_explorer_to_columns()
-        _rerun()
+        st.rerun()
 
     st.header(col)
     valid = df[col].dropna()
@@ -1599,7 +1579,7 @@ def _render_explorer_drilldown(df, col, value):
     if st.button("Back to groupby"):
         st.session_state["de_state"] = "groupby"
         st.session_state["de_selected_value"] = None
-        _rerun()
+        st.rerun()
 
     # Filter
     if pd.isna(value):
@@ -1668,14 +1648,27 @@ def page_data_explorer():
     """Entry point for the Data Explorer page."""
     _init_explorer_state()
 
-    # --- Sidebar: file input ---
+    # --- Sidebar: file selector ---
     with st.sidebar:
         st.subheader("Load CSV")
-        csv_path = st.text_input(
-            "File path",
-            value=st.session_state.get("de_csv_path", ""),
-            key="de_csv_path_input",
-            placeholder="./extracted_output/combined_grants.csv",
+        # Build list of CSVs in extracted_output
+        csv_files = []
+        if os.path.isdir(EXTRACTED_DIR):
+            csv_files = sorted(
+                f for f in os.listdir(EXTRACTED_DIR) if f.endswith(".csv")
+            )
+        options = ["(select a file)"] + csv_files
+        # Find current selection index
+        current = st.session_state.get("de_csv_path", "")
+        current_basename = os.path.basename(current) if current else ""
+        default_idx = 0
+        if current_basename in csv_files:
+            default_idx = csv_files.index(current_basename) + 1
+        selected_file = st.selectbox(
+            "CSV file",
+            options,
+            index=default_idx,
+            key="de_file_select",
         )
         uploaded = st.file_uploader("or upload", type=["csv"], key="de_uploader")
 
@@ -1686,24 +1679,21 @@ def page_data_explorer():
                     st.session_state["de_df"] = new_df
                     st.session_state["de_csv_path"] = uploaded.name
                     _reset_explorer_to_columns()
-                    _rerun()
+                    st.rerun()
                 except Exception as e:
                     st.error("Failed to read uploaded file: {}".format(e))
-            elif csv_path and csv_path.strip():
-                path = csv_path.strip()
-                if not os.path.exists(path):
-                    st.error("File not found: {}".format(path))
+            elif selected_file and selected_file != "(select a file)":
+                path = os.path.join(EXTRACTED_DIR, selected_file)
+                new_df = _load_csv_cached(path)
+                if new_df is None:
+                    st.error("Failed to parse CSV: {}".format(path))
                 else:
-                    new_df = _load_csv_cached(path)
-                    if new_df is None:
-                        st.error("Failed to parse CSV: {}".format(path))
-                    else:
-                        st.session_state["de_df"] = new_df
-                        st.session_state["de_csv_path"] = path
-                        _reset_explorer_to_columns()
-                        _rerun()
+                    st.session_state["de_df"] = new_df
+                    st.session_state["de_csv_path"] = path
+                    _reset_explorer_to_columns()
+                    st.rerun()
             else:
-                st.warning("Enter a file path or upload a CSV.")
+                st.warning("Select a CSV file or upload one.")
 
     # --- Main area ---
     st.title("Data Explorer")
@@ -1721,21 +1711,21 @@ def page_data_explorer():
             _render_explorer_drilldown(df, col, value)
         else:
             st.session_state["de_state"] = "columns"
-            _rerun()
+            st.rerun()
     elif state == "numeric":
         col = st.session_state.get("de_selected_col")
         if col is not None and col in df.columns:
             _render_explorer_numeric(df, col)
         else:
             st.session_state["de_state"] = "columns"
-            _rerun()
+            st.rerun()
     elif state == "groupby":
         col = st.session_state.get("de_selected_col")
         if col is not None and col in df.columns:
             _render_explorer_groupby(df, col)
         else:
             st.session_state["de_state"] = "columns"
-            _rerun()
+            st.rerun()
     else:
         _render_explorer_column_list(df)
 
@@ -1744,32 +1734,25 @@ def page_data_explorer():
 # Main app
 # ---------------------------------------------------------------------------
 
-def main():
-    with st.sidebar:
-        st.title("990 Explorer")
-        page = st.radio(
-            "Page",
-            ["Schedule Browser", "Field Finder", "Org Lookup", "Data Explorer"],
-            label_visibility="collapsed",
-        )
-
-    # Data Explorer doesn't need the concordance — dispatch early
-    if page == "Data Explorer":
-        page_data_explorer()
-        return
-
-    # --- Concordance-dependent pages ---
+def _load_concordance_deps():
+    """Load concordance and related data, returning a tuple or None."""
     concordance = load_concordance()
     if not concordance:
-        st.error("Concordance not found at `{}`".format(CONCORDANCE_PATH))
-        return
-
+        return None
     all_fields = concordance.get("fields", {})
     metadata = concordance.get("metadata", {})
     frequency = load_frequency()
     cat_data = load_categories()
     field_to_cats = cat_data.get("field_to_categories", {}) if cat_data else {}
+    return all_fields, metadata, frequency, field_to_cats
 
+
+def _page_schedule_browser():
+    deps = _load_concordance_deps()
+    if not deps:
+        st.error("Concordance not found at `{}`".format(CONCORDANCE_PATH))
+        return
+    all_fields, metadata, frequency, field_to_cats = deps
     with st.sidebar:
         st.divider()
         st.subheader("Quick Stats")
@@ -1779,14 +1762,26 @@ def main():
         st.write("{:,} fields".format(len(all_fields)))
         st.write("{} schedules".format(schedule_count))
         st.write("{} versions".format(len(metadata.get("versions", []))))
+    page_schedule_browser(all_fields, metadata, frequency, field_to_cats)
 
-    # --- Dispatch to page ---
-    if page == "Schedule Browser":
-        page_schedule_browser(all_fields, metadata, frequency, field_to_cats)
-    elif page == "Field Finder":
-        page_field_finder(all_fields, metadata, frequency, field_to_cats)
-    elif page == "Org Lookup":
-        page_org_lookup()
+
+def _page_field_finder():
+    deps = _load_concordance_deps()
+    if not deps:
+        st.error("Concordance not found at `{}`".format(CONCORDANCE_PATH))
+        return
+    all_fields, metadata, frequency, field_to_cats = deps
+    page_field_finder(all_fields, metadata, frequency, field_to_cats)
+
+
+def main():
+    pages = st.navigation([
+        st.Page(_page_schedule_browser, title="Schedule Browser", icon=":material/list:"),
+        st.Page(_page_field_finder, title="Field Finder", icon=":material/search:"),
+        st.Page(page_org_lookup, title="Org Lookup", icon=":material/business:"),
+        st.Page(page_data_explorer, title="Data Explorer", icon=":material/analytics:"),
+    ])
+    pages.run()
 
 
 if __name__ == "__main__":

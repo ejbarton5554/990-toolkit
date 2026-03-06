@@ -1271,8 +1271,8 @@ Download schemas from:
     )
     parser.add_argument("--schema-dir", required=True,
                         help="Directory containing schema version folders")
-    parser.add_argument("--output-dir", default="./concordance_output",
-                        help="Directory for output files (default: ./concordance_output)")
+    parser.add_argument("--output-dir", default="./data/concordance",
+                        help="Directory for output files (default: ./data/concordance)")
     parser.add_argument("--single-version", default=None,
                         help="Process only one version (version folder name)")
     parser.add_argument("--verbose", action="store_true",

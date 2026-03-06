@@ -256,10 +256,10 @@ FEE_FILES = [
 
 def main():
     parser = argparse.ArgumentParser(description='Build unified contractor list from extracted 990 CSVs')
-    parser.add_argument('--extracted-dir', default='./extracted_output',
-                        help='Directory containing extracted CSVs (default: ./extracted_output)')
-    parser.add_argument('--output', default='./extracted_output/combined_contractors.csv',
-                        help='Output path for combined CSV (default: ./extracted_output/combined_contractors.csv)')
+    parser.add_argument('--extracted-dir', default='./data/extracted',
+                        help='Directory containing extracted CSVs (default: ./data/extracted)')
+    parser.add_argument('--output', default='./data/extracted/combined_contractors.csv',
+                        help='Output path for combined CSV (default: ./data/extracted/combined_contractors.csv)')
     args = parser.parse_args()
 
     if not os.path.isdir(args.extracted_dir):

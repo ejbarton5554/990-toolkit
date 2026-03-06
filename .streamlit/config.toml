@@ -1,0 +1,23 @@
+[theme]
+base = "light"
+backgroundColor = "#2a2735"
+primaryColor = "#14bfc7"
+secondaryBackgroundColor = "#692a93"
+textColor = "#f5f7f7"
+font = "sans serif"
+# pink fa54d9  dark blue 24145  light blue 2eb5f5
+# white fffafb bright purple 703dfa light green 38d1b2
+
+[runner]
+magicEnabled = true
+fixMatplotlib = true
+
+[server]
+headless = true
+port = 8501
+runOnSave = false
+
+[browser]
+serverAddress = "localhost"
+gatherUsageStats = false
+serverPort = 8501

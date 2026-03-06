@@ -1155,7 +1155,7 @@ Examples:
                         help="Path to field_lookup.json from concordance builder")
     parser.add_argument("--xml-file", help="Single XML filing to audit against")
     parser.add_argument("--xml-dir", help="Directory of XML filings to audit against")
-    parser.add_argument("--output-dir", default="./audit_output",
+    parser.add_argument("--output-dir", default="./data/audit",
                         help="Directory for audit output files")
     parser.add_argument("--patch", action="store_true",
                         help="Generate a patch file for unknown xpaths")

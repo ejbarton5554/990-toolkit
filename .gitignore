@@ -1,12 +1,12 @@
 # Data (large, sensitive, or IRS-provided)
-UnzipSchemas/
-990_xmls/
-concordance_output/
-audit_output/
-extracted_output/
+data/schemas/
+data/xmls/
+data/concordance/
+data/audit/
+data/extracted/
+archive/
 
 # Python
 __pycache__/
 *.pyc
 .venv/
-```

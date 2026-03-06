@@ -715,10 +715,10 @@ Examples:
                         help="Extract all leaf fields from this concordance schedule (e.g. IRS990ScheduleJ)")
     parser.add_argument("--list-schedules", action="store_true",
                         help="List available schedule names from the concordance and exit")
-    parser.add_argument("--xml-dir", default="./990_xmls",
-                        help="Directory of IRS 990 XML filings (default: ./990_xmls)")
-    parser.add_argument("--concordance", default="./concordance_output/field_lookup.json",
-                        help="Path to field_lookup.json (default: ./concordance_output/field_lookup.json)")
+    parser.add_argument("--xml-dir", default="./data/xmls",
+                        help="Directory of IRS 990 XML filings (default: ./data/xmls)")
+    parser.add_argument("--concordance", default="./data/concordance/field_lookup.json",
+                        help="Path to field_lookup.json (default: ./data/concordance/field_lookup.json)")
     parser.add_argument("--output-dir", default=None,
                         help="Output directory for CSVs (default: ./extracted_output/<schedule> or ./extracted_output)")
     parser.add_argument("--limit", type=int, default=0,
@@ -744,9 +744,9 @@ Examples:
     # Default output directory: schedule-specific subdirectory when --schedule is used
     if args.output_dir is None:
         if args.schedule:
-            args.output_dir = os.path.join("./extracted_output", args.schedule)
+            args.output_dir = os.path.join("./data/extracted", args.schedule)
         else:
-            args.output_dir = "./extracted_output"
+            args.output_dir = "./data/extracted"
 
     # Validate concordance
     if not os.path.isfile(args.concordance):
