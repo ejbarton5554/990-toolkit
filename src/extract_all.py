@@ -35,11 +35,18 @@ def _strip_ns(tag):
 
 
 def extract_filing(xml_path):
-    # type: (str) -> Optional[Tuple[Dict[str, str], List[Tuple[str, str, str, str]]]]
+    # type: (str) -> Optional[Tuple[Dict[str, str], List[Tuple[str, str, str, str, int]]]]
     """Extract all leaf fields from one filing.
 
     Returns (header_dict, rows) where each row is
-    (xpath, schedule, field_path, value).
+    (xpath, schedule, field_path, value, instance).
+
+    Instance numbers are tracked at the container level: when a parent has
+    multiple children with the same tag (e.g. multiple RecipientTable elements),
+    each child gets an incrementing instance number. All descendants of that
+    child inherit the same instance number so fields within a repeating group
+    are correctly associated.
+
     Returns None on parse error.
     """
     info = parse_xml(xml_path)
@@ -58,39 +65,45 @@ def extract_filing(xml_path):
         "form_type": info["form_type"],
     }
 
-    rows = []  # type: List[Tuple[str, str, str, str]]
-    seen = {}  # type: Dict[str, int]  # xpath -> instance count
+    rows = []  # type: List[Tuple[str, str, str, str, int]]
 
-    def _walk(elem, path_parts):
-        # type: (Any, List[str]) -> None
+    def _walk(elem, path_parts, instance):
+        # type: (Any, List[str], int) -> None
         tag = _strip_ns(elem.tag)
         current_parts = path_parts + [tag]
         xpath = "/" + "/".join(current_parts)
 
         children = list(elem)
         if children:
+            # Count children by tag to detect repeating groups
+            tag_counts = {}  # type: Dict[str, int]
             for child in children:
-                _walk(child, current_parts)
+                ctag = _strip_ns(child.tag)
+                tag_counts[ctag] = tag_counts.get(ctag, 0) + 1
+
+            # Walk children, assigning instance numbers to repeating siblings
+            tag_seen = {}  # type: Dict[str, int]
+            for child in children:
+                ctag = _strip_ns(child.tag)
+                tag_seen[ctag] = tag_seen.get(ctag, 0) + 1
+                if tag_counts[ctag] > 1:
+                    # This tag repeats — use sibling instance number
+                    _walk(child, current_parts, tag_seen[ctag])
+                else:
+                    # Non-repeating child — inherit parent's instance
+                    _walk(child, current_parts, instance)
         else:
             text = elem.text.strip() if elem.text else ""
             if text:
-                # Handle repeating xpaths
-                if xpath in seen:
-                    seen[xpath] += 1
-                    xpath_stored = "%s[%d]" % (xpath, seen[xpath])
-                else:
-                    seen[xpath] = 1
-                    xpath_stored = xpath
-
                 # Split into schedule + field_path
-                parts = xpath_stored.strip("/").split("/", 1)
+                parts = xpath.strip("/").split("/", 1)
                 schedule = parts[0] if parts else ""
                 field_path = parts[1] if len(parts) > 1 else ""
 
-                rows.append((xpath_stored, schedule, field_path, text))
+                rows.append((xpath, schedule, field_path, text, instance))
 
     for child in return_data:
-        _walk(child, [])
+        _walk(child, [], 1)
 
     return header, rows
 
@@ -120,6 +133,7 @@ CREATE TABLE IF NOT EXISTS xpaths (
 CREATE TABLE IF NOT EXISTS fields (
     filing_id INTEGER NOT NULL,
     xpath_id INTEGER NOT NULL,
+    instance INTEGER NOT NULL DEFAULT 1,
     value TEXT,
     FOREIGN KEY (filing_id) REFERENCES filings(filing_id),
     FOREIGN KEY (xpath_id) REFERENCES xpaths(xpath_id)
@@ -129,11 +143,12 @@ CREATE INDEX IF NOT EXISTS idx_filings_ein ON filings(ein);
 CREATE INDEX IF NOT EXISTS idx_filings_form ON filings(form_type);
 CREATE INDEX IF NOT EXISTS idx_fields_filing ON fields(filing_id);
 CREATE INDEX IF NOT EXISTS idx_fields_xpath ON fields(xpath_id);
+CREATE INDEX IF NOT EXISTS idx_fields_instance ON fields(filing_id, instance);
 CREATE INDEX IF NOT EXISTS idx_xpaths_schedule ON xpaths(schedule);
 
 CREATE VIEW IF NOT EXISTS fields_view AS
 SELECT f.ein, f.tax_period, f.org_name, f.form_type, f.return_version,
-       x.xpath, x.schedule, x.field_path, d.value
+       x.xpath, x.schedule, x.field_path, d.instance, d.value
 FROM fields d
 JOIN filings f ON d.filing_id = f.filing_id
 JOIN xpaths x ON d.xpath_id = x.xpath_id;
@@ -187,7 +202,7 @@ def find_xml_files(xml_dir):
 # ---------------------------------------------------------------------------
 
 def _worker_func(xml_path):
-    # type: (str) -> Optional[Tuple[str, Dict[str, str], List[Tuple[str, str, str, str]]]]
+    # type: (str) -> Optional[Tuple[str, Dict[str, str], List[Tuple[str, str, str, str, int]]]]
     """Worker: extract one filing. Returns (filename, header, rows) or None."""
     result = extract_filing(xml_path)
     if result is None:
@@ -269,7 +284,7 @@ Examples:
     processed = 0
     skipped = 0
     total_fields = 0
-    batch_filings = []  # type: List[Tuple[str, Dict[str, str], List[Tuple[str, str, str, str]]]]
+    batch_filings = []  # type: List[Tuple[str, Dict[str, str], List[Tuple[str, str, str, str, int]]]]
     t_start = time.time()
 
     def _get_xpath_id(xpath, schedule, field_path):
@@ -306,11 +321,11 @@ Examples:
             filing_id = cursor.lastrowid
             if rows:
                 field_rows = []
-                for xpath, schedule, field_path, value in rows:
+                for xpath, schedule, field_path, value, instance in rows:
                     xpath_id = _get_xpath_id(xpath, schedule, field_path)
-                    field_rows.append((filing_id, xpath_id, value))
+                    field_rows.append((filing_id, xpath_id, instance, value))
                 conn.executemany(
-                    "INSERT INTO fields (filing_id, xpath_id, value) VALUES (?, ?, ?)",
+                    "INSERT INTO fields (filing_id, xpath_id, instance, value) VALUES (?, ?, ?, ?)",
                     field_rows,
                 )
                 total_fields += len(rows)

@@ -68,7 +68,7 @@ class FieldsDB(object):
         """All fields for a given EIN (all tax periods)."""
         return pd.read_sql(
             "SELECT ein, tax_period, org_name, form_type, "
-            "       xpath, schedule, field_path, value "
+            "       xpath, schedule, field_path, instance, value "
             "FROM %s WHERE ein = ?" % _VIEW,
             self.conn, params=(ein,),
         )
@@ -78,7 +78,7 @@ class FieldsDB(object):
         """All fields for a specific filing (EIN + tax period)."""
         return pd.read_sql(
             "SELECT ein, tax_period, org_name, form_type, "
-            "       xpath, schedule, field_path, value "
+            "       xpath, schedule, field_path, instance, value "
             "FROM %s WHERE ein = ? AND tax_period = ?" % _VIEW,
             self.conn, params=(ein, tax_period),
         )
@@ -103,7 +103,7 @@ class FieldsDB(object):
         # type: (str, Optional[int]) -> pd.DataFrame
         """All fields for a schedule (e.g., 'IRS990ScheduleI')."""
         sql = (
-            "SELECT ein, tax_period, org_name, xpath, field_path, value "
+            "SELECT ein, tax_period, org_name, xpath, field_path, instance, value "
             "FROM %s WHERE schedule = ?" % _VIEW
         )
         if limit:
