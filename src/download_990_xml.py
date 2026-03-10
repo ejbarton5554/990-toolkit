@@ -167,6 +167,10 @@ def main():
         help="Also download the index CSV for each year",
     )
     parser.add_argument(
+        "--index-only", action="store_true",
+        help="Download only the index CSVs (no XML zips)",
+    )
+    parser.add_argument(
         "--verbose", "-v", action="store_true",
         help="Show progress details",
     )
@@ -179,16 +183,8 @@ def main():
     for year in sorted(args.years):
         print("\n=== %d ===" % year)
 
-        # Discover available files
-        print("Discovering available files...")
-        files = discover_files_for_year(year, verbose=args.verbose)
-        if not files:
-            print("No files found for %d" % year)
-            continue
-        print("Found %d zip files for %d" % (len(files), year))
-
         # Download index if requested
-        if args.index:
+        if args.index or args.index_only:
             idx_url = index_url(year)
             idx_path = os.path.join(output_dir, "index_%d.csv" % year)
             if os.path.exists(idx_path):
@@ -196,6 +192,17 @@ def main():
             else:
                 print("Downloading index_%d.csv..." % year)
                 download_file(idx_url, idx_path, verbose=args.verbose)
+
+        if args.index_only:
+            continue
+
+        # Discover available files
+        print("Discovering available files...")
+        files = discover_files_for_year(year, verbose=args.verbose)
+        if not files:
+            print("No files found for %d" % year)
+            continue
+        print("Found %d zip files for %d" % (len(files), year))
 
         # Download and extract each zip
         extract_dir = os.path.join(output_dir, "Forms%d" % year)
