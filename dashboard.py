@@ -22,6 +22,10 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 
+from data_utilities.initial_checks import read_file, detect_structure, detect_index
+from data_utilities.completeness import completeness_report
+from data_utilities.information import classify_columns
+
 try:
     import anthropic
 except ImportError:
@@ -61,6 +65,77 @@ def _load_csv_cached(path):
         return pd.read_csv(path, low_memory=False)
     except Exception:
         return None
+
+
+USER_OUTPUT_DIR = "./user_output"
+_COL_PROFILES_FILE = os.path.join(USER_OUTPUT_DIR, "column_profiles.json")
+
+
+def _load_all_col_profiles():
+    # type: () -> Dict[str, Dict]
+    """Load the column profiles file.
+
+    Returns dict keyed by 'filename_columnname' with per-column profile dicts.
+    """
+    if not os.path.exists(_COL_PROFILES_FILE):
+        return {}
+    try:
+        with open(_COL_PROFILES_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _save_col_profiles(csv_path, df, col_classes):
+    # type: (str, pd.DataFrame, Dict[str, str]) -> None
+    """Save column profiles (class + baseline stats) into the shared file."""
+    os.makedirs(USER_OUTPUT_DIR, exist_ok=True)
+    all_data = _load_all_col_profiles()
+    filename = os.path.basename(csv_path)
+    basename = os.path.splitext(filename)[0]
+    n_rows = len(df)
+
+    comp = st.session_state.get("de_completeness", {})
+    col_stats = comp.get("columns", {})
+
+    for col in df.columns:
+        key = "{}_{}".format(basename, col)
+        stats = col_stats.get(col, {})
+        series = df[col]
+        profile = {
+            "file": filename,
+            "column": col,
+            "classification": col_classes.get(col, ""),
+            "dtype": str(series.dtype),
+            "total_rows": n_rows,
+            "non_null": stats.get("non_null", int(series.notna().sum())),
+            "nontrivial": stats.get("nontrivial", int(series.notna().sum())),
+            "null_count": stats.get("null_count", int(series.isna().sum())),
+            "empty_string_count": stats.get("empty_string_count", 0),
+            "fill_pct": stats.get("fill_pct", round(100.0 * series.notna().sum() / n_rows, 1) if n_rows else 0),
+            "nontrivial_pct": stats.get("nontrivial_pct", 0),
+            "n_unique": int(series.nunique(dropna=False)),
+        }
+        all_data[key] = profile
+    with open(_COL_PROFILES_FILE, "w", encoding="utf-8") as f:
+        json.dump(all_data, f, indent=2)
+
+
+def _load_col_classes(csv_path):
+    # type: (str) -> Optional[Dict[str, str]]
+    """Load saved column classifications for a specific CSV from profiles.
+
+    Returns {col_name: class_string} or None if nothing saved.
+    """
+    all_data = _load_all_col_profiles()
+    if not all_data:
+        return None
+    filename = os.path.basename(csv_path)
+    result = {}
+    for entry in all_data.values():
+        if entry.get("file") == filename and entry.get("classification"):
+            result[entry["column"]] = entry["classification"]
+    return result if result else None
 
 
 def _is_numeric_column(series):
@@ -127,7 +202,8 @@ FREQUENCY_PATH = os.path.join(CONCORDANCE_DIR, "field_frequency.json")
 EXTRACTED_DIR = "./data/extracted"
 
 st.set_page_config(
-    page_title="IRS 990 Concordance Explorer",
+    page_title="IRS 990 Explorer",
+    page_icon="InfiniscapeFavicon.png",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -1423,10 +1499,106 @@ def page_org_lookup():
 # Page: Data Explorer
 # ---------------------------------------------------------------------------
 
+def _render_explorer_initial_checks():
+    """Show initial checks report with a Continue button."""
+    file_report = st.session_state.get("de_file_report", {})
+    structure = st.session_state.get("de_structure", {})
+    index_info = st.session_state.get("de_index_info", {})
+    comp = st.session_state.get("de_completeness", {})
+
+    st.header("Initial Checks")
+
+    # File info
+    st.subheader("File")
+    fc1, fc2, fc3 = st.columns(3)
+    with fc1:
+        st.metric("Format", file_report.get("format", "?"))
+    with fc2:
+        size = file_report.get("size_bytes")
+        if size is not None:
+            if size > 1_000_000:
+                st.metric("Size", "{:.1f} MB".format(size / 1_000_000))
+            else:
+                st.metric("Size", "{:.0f} KB".format(size / 1000))
+        else:
+            st.metric("Size", "?")
+    with fc3:
+        st.metric("Structured", "Yes" if file_report.get("structured") else "No")
+
+    if file_report.get("unstructured_hint"):
+        st.info(file_report["unstructured_hint"])
+
+    # Structure
+    st.subheader("Structure")
+    sc1, sc2 = st.columns(2)
+    with sc1:
+        st.metric("Rows", "{:,}".format(structure.get("n_rows", 0)))
+    with sc2:
+        st.metric("Columns", "{:,}".format(structure.get("n_cols", 0)))
+
+    for obs in structure.get("relationships", []):
+        st.markdown("- {}".format(obs))
+
+    # Indexing
+    key = index_info.get("unique_key")
+    if key:
+        st.markdown("**Unique key:** `{}`".format(", ".join(key)))
+    if index_info.get("is_time_series"):
+        st.markdown("**Time series column:** `{}`".format(index_info["time_column"]))
+
+    # Completeness summary
+    st.subheader("Completeness")
+    summary = comp.get("summary", {})
+    cc1, cc2, cc3 = st.columns(3)
+    with cc1:
+        st.metric("Overall Fill", "{:.0f}%".format(summary.get("overall_nontrivial_pct", 0)))
+    with cc2:
+        st.metric("Empty Columns", summary.get("empty_column_count", 0))
+    with cc3:
+        st.metric("Fully Populated", summary.get("full_column_count", 0))
+
+    empty_cols = summary.get("empty_columns", [])
+    if empty_cols:
+        st.caption("Empty: {}".format(", ".join(empty_cols)))
+
+    # Column dtypes summary
+    dtypes = structure.get("dtypes", {})
+    if dtypes:
+        dtype_counts = {}
+        for d in dtypes.values():
+            dtype_counts[d] = dtype_counts.get(d, 0) + 1
+        st.subheader("Column Types")
+        parts = ["{}: {}".format(d, c) for d, c in sorted(dtype_counts.items(), key=lambda x: -x[1])]
+        st.markdown(", ".join(parts))
+
+    # Continue button
+    st.divider()
+    if st.button("Continue to columns", type="primary", key="de_continue"):
+        st.session_state["de_state"] = "columns"
+        st.rerun()
+
+
+_CLASS_OPTIONS = ["numeric", "identifier", "categorical", "label", "long_text", "empty"]
+
+
 def _render_explorer_column_list(df):
-    """State 1: show all columns as clickable buttons with dtype and non-null count."""
+    """State 1: show all columns as clickable buttons with completeness stats."""
     st.header("Columns")
     st.caption("{:,} rows x {:,} columns".format(len(df), len(df.columns)))
+
+    comp = st.session_state.get("de_completeness", {})
+    col_stats = comp.get("columns", {})
+    col_classes = st.session_state.get("de_col_classes", {})
+    # Auto-load saved profiles if col_classes is empty but a file is loaded
+    if not col_classes:
+        csv_path = st.session_state.get("de_csv_path", "")
+        if csv_path:
+            saved = _load_col_classes(csv_path)
+            if saved:
+                auto = classify_columns(df)
+                col_classes = dict(auto)
+                col_classes.update(saved)
+                st.session_state["de_col_classes"] = col_classes
 
     search = st.text_input("Filter columns", key="de_col_search")
     cols = list(df.columns)
@@ -1437,28 +1609,79 @@ def _render_explorer_column_list(df):
         st.info("No columns match the filter.")
         return
 
+    # Header row
+    h1, h2, h3, h4, h5, h6 = st.columns([3, 2, 1, 1, 1, 1])
+    with h2:
+        st.caption("**class**")
+    with h3:
+        st.caption("**nontrivial**")
+    with h4:
+        st.caption("**fill %**")
+    with h5:
+        st.caption("**nulls**")
+    with h6:
+        st.caption("**unique**")
+
     for c in cols:
-        c1, c2, c3, c4, c5 = st.columns([3, 1, 1, 1, 1])
-        non_null = int(df[c].notna().sum())
-        pct = 100.0 * non_null / len(df) if len(df) > 0 else 0
-        dtype_str = str(df[c].dtype)
+        c1, c2, c3, c4, c5, c6 = st.columns([3, 2, 1, 1, 1, 1])
+        stats = col_stats.get(c, {})
+        nontrivial = stats.get("nontrivial", int(df[c].notna().sum()))
+        nontrivial_pct = stats.get("nontrivial_pct", 0)
+        null_count = stats.get("null_count", int(df[c].isna().sum()))
         n_unique = int(df[c].nunique(dropna=False))
+
+        # Classification selectbox
+        current_class = col_classes.get(c, "label")
+        class_idx = _CLASS_OPTIONS.index(current_class) if current_class in _CLASS_OPTIONS else 0
+
         with c1:
             if st.button(c, key="de_colbtn_{}".format(c)):
                 st.session_state["de_selected_col"] = c
-                if _is_numeric_column(df[c]) and not _is_id_column(c, df[c]):
+                user_class = col_classes.get(c, current_class)
+                if user_class == "numeric":
                     st.session_state["de_state"] = "numeric"
                 else:
                     st.session_state["de_state"] = "groupby"
                 st.rerun()
         with c2:
-            st.caption(dtype_str)
+            new_class = st.selectbox(
+                "class",
+                _CLASS_OPTIONS,
+                index=class_idx,
+                key="de_class_{}".format(c),
+                label_visibility="collapsed",
+            )
+            if new_class != current_class:
+                col_classes[c] = new_class
+                st.session_state["de_col_classes"] = col_classes
         with c3:
-            st.caption("{:,}".format(non_null))
+            st.caption("{:,}".format(nontrivial))
         with c4:
-            st.caption("{:.0f}%".format(pct))
+            if nontrivial_pct >= 80:
+                st.caption(":green[{:.0f}%]".format(nontrivial_pct))
+            elif nontrivial_pct >= 40:
+                st.caption(":orange[{:.0f}%]".format(nontrivial_pct))
+            elif nontrivial_pct > 0:
+                st.caption(":red[{:.0f}%]".format(nontrivial_pct))
+            else:
+                st.caption(":red[empty]")
         with c5:
-            st.caption("{:,} unique".format(n_unique))
+            st.caption("{:,}".format(null_count) if null_count > 0 else "—")
+        with c6:
+            st.caption("{:,}".format(n_unique))
+
+    # Save column profiles button
+    st.divider()
+    csv_path = st.session_state.get("de_csv_path", "")
+    if csv_path:
+        sc1, sc2 = st.columns([1, 3])
+        with sc1:
+            if st.button("Save column profiles", key="de_save_classes"):
+                _save_col_profiles(csv_path, df, col_classes)
+                st.success("Saved to {}".format(_COL_PROFILES_FILE))
+        with sc2:
+            if os.path.exists(_COL_PROFILES_FILE):
+                st.caption("Previously saved: {}".format(_COL_PROFILES_FILE))
 
 
 def _render_explorer_groupby(df, col):
@@ -1651,19 +1874,32 @@ def page_data_explorer():
     # --- Sidebar: file selector ---
     with st.sidebar:
         st.subheader("Load CSV")
-        # Build list of CSVs in extracted_output
-        csv_files = []
+        # Build list of CSVs, split into data products vs raw extractions
+        products = []
+        extractions = []
+        _PRODUCT_PATTERNS = ("combined_", "scalar_fields", "field_reference")
         if os.path.isdir(EXTRACTED_DIR):
-            csv_files = sorted(
-                f for f in os.listdir(EXTRACTED_DIR) if f.endswith(".csv")
-            )
-        options = ["(select a file)"] + csv_files
+            for f in sorted(os.listdir(EXTRACTED_DIR)):
+                if not f.endswith(".csv"):
+                    continue
+                if f.startswith(_PRODUCT_PATTERNS):
+                    products.append(f)
+                else:
+                    extractions.append(f)
+        # Build options: products first, then extractions, with separator
+        options = ["(select a file)"]
+        if products:
+            options.append("── Data Products ──")
+            options.extend(products)
+        if extractions:
+            options.append("── Raw Extractions ──")
+            options.extend(extractions)
         # Find current selection index
         current = st.session_state.get("de_csv_path", "")
         current_basename = os.path.basename(current) if current else ""
         default_idx = 0
-        if current_basename in csv_files:
-            default_idx = csv_files.index(current_basename) + 1
+        if current_basename in options:
+            default_idx = options.index(current_basename)
         selected_file = st.selectbox(
             "CSV file",
             options,
@@ -1673,27 +1909,51 @@ def page_data_explorer():
         uploaded = st.file_uploader("or upload", type=["csv"], key="de_uploader")
 
         if st.button("Load", key="de_load_btn"):
+            load_path = None
             if uploaded is not None:
-                try:
-                    new_df = pd.read_csv(uploaded, low_memory=False)
-                    st.session_state["de_df"] = new_df
-                    st.session_state["de_csv_path"] = uploaded.name
-                    _reset_explorer_to_columns()
-                    st.rerun()
-                except Exception as e:
-                    st.error("Failed to read uploaded file: {}".format(e))
-            elif selected_file and selected_file != "(select a file)":
-                path = os.path.join(EXTRACTED_DIR, selected_file)
-                new_df = _load_csv_cached(path)
-                if new_df is None:
-                    st.error("Failed to parse CSV: {}".format(path))
-                else:
-                    st.session_state["de_df"] = new_df
-                    st.session_state["de_csv_path"] = path
-                    _reset_explorer_to_columns()
-                    st.rerun()
-            else:
+                # Save uploaded file to a temp path so read_file can handle it
+                import tempfile
+                tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".csv")
+                tmp.write(uploaded.getvalue())
+                tmp.close()
+                load_path = tmp.name
+                st.session_state["de_csv_path"] = uploaded.name
+            elif selected_file and not selected_file.startswith(("(", "──")):
+                load_path = os.path.join(EXTRACTED_DIR, selected_file)
+                st.session_state["de_csv_path"] = load_path
+
+            if load_path is None:
                 st.warning("Select a CSV file or upload one.")
+            else:
+                new_df, file_report = read_file(load_path)
+                if not file_report["success"] or new_df is None:
+                    st.error(file_report.get("error") or "Failed to read file.")
+                    if file_report.get("unstructured_hint"):
+                        st.info(file_report["unstructured_hint"])
+                elif file_report.get("truncated"):
+                    st.error(file_report["error"])
+                else:
+                    structure = detect_structure(new_df)
+                    index_info = detect_index(new_df)
+                    comp = completeness_report(new_df)
+                    auto_classes = classify_columns(new_df)
+                    # Merge with any previously saved classifications
+                    saved = _load_col_classes(load_path)
+                    merged = dict(auto_classes)
+                    if saved:
+                        for col, cls in saved.items():
+                            if col in merged:
+                                merged[col] = cls
+                    st.session_state["de_df"] = new_df
+                    st.session_state["de_file_report"] = file_report
+                    st.session_state["de_structure"] = structure
+                    st.session_state["de_index_info"] = index_info
+                    st.session_state["de_completeness"] = comp
+                    st.session_state["de_col_classes"] = merged
+                    st.session_state["de_state"] = "initial_checks"
+                    st.session_state["de_selected_col"] = None
+                    st.session_state["de_selected_value"] = None
+                    st.rerun()
 
     # --- Main area ---
     st.title("Data Explorer")
@@ -1704,7 +1964,9 @@ def page_data_explorer():
 
     state = st.session_state.get("de_state", "columns")
 
-    if state == "drilldown":
+    if state == "initial_checks":
+        _render_explorer_initial_checks()
+    elif state == "drilldown":
         col = st.session_state.get("de_selected_col")
         value = st.session_state.get("de_selected_value")
         if col is not None:

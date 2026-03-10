@@ -10,7 +10,7 @@ font = "sans serif"
 
 [runner]
 magicEnabled = true
-fixMatplotlib = true
+
 
 [server]
 headless = true
